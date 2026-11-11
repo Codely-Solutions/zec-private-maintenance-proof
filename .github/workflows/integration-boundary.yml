@@ -19,6 +19,7 @@ jobs:
           fi
           grep -E 'GH013|Cannot update this protected ref' <<< "$result"
   admitted:
+    if: vars.INTEGRATION_PROOF_READY == 'true'
     needs: denied
     runs-on: ubuntu-24.04
     timeout-minutes: 3
