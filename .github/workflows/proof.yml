@@ -1,0 +1,53 @@
+name: Maintenance cloud proof
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'proof/maintenance'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Validate synthetic retry limit
+        run: |
+          if ! diff -u <(printf '3\n') proof/retry-limit.txt; then
+            echo '::error file=proof/retry-limit.txt,line=1::The supported retry limit is 3. Correct only this synthetic configuration file.'
+            exit 1
+          fi
+
+  request-repair:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Request repair for the failed internal proposal
+        run: |
+          pr=$(gh pr list --head proof/maintenance --base main --state open --json number,headRefOid,isCrossRepository --jq 'map(select(.isCrossRepository == false)) | if length == 1 then .[0].number else empty end')
+          test -n "$pr"
+          head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+          run=$(gh run list --workflow proof.yml --commit "$head" --event pull_request --limit 1 --json conclusion,url --jq '.[] | select(.conclusion == "failure") | .url')
+          test -n "$run"
+          existing=$(gh api "repos/$GH_REPO/issues/$pr/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]") | .body')
+          if [[ "$existing" == *"$head"* ]]; then
+            echo 'Repair already requested for this commit.'
+            exit 0
+          fi
+          gh pr comment "$pr" --body "@codex fix the synthetic CI failure in $run (head $head). Read the failed check and explain its diagnosis. Change only proof/retry-limit.txt on this PR branch, push the correction, and report the result. Keep workflows, settings, secrets, main and all other repositories out of scope."
